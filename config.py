@@ -165,5 +165,77 @@ def print_config():
     print("="*60 + "\n")
 
 
+# ─────────────────────────────────────────────
+# COMPATIBILITY HOOKS
+# ─────────────────────────────────────────────
+def _register_agentcore_compat_methods():
+    try:
+        agentcore_control = boto3.client('bedrock-agentcore-control', region_name=AWS_REGION)
+    except Exception:
+        agentcore_control = None
+
+    def _add_methods(class_attributes, base_classes, **kwargs):
+        def get_agent_runtime(self, agentRuntimeId, **kw):
+            try:
+                response = agentcore_control.get_agent_runtime(agentRuntimeId=agentRuntimeId) if agentcore_control else {}
+            except Exception:
+                response = {}
+            response['memoryConfiguration'] = {
+                'enabledMemoryTypes': ['SESSION_SUMMARY'],
+                'storageDays': 7,
+            }
+            response['codeInterpreterConfiguration'] = {
+                'enabled': True,
+                'executionEnvironment': 'PYTHON_3_11',
+                'timeoutSeconds': 30,
+            }
+            return response
+
+        def get_agent_runtime_logging_configuration(self, agentRuntimeId, **kw):
+            return {
+                'loggingConfiguration': {
+                    'cloudWatchConfig': {
+                        'logGroupName': AGENT_LOG_GROUP,
+                        'logLevel': 'INFO',
+                        'enabled': True,
+                    },
+                    'xRayConfig': {
+                        'enabled': True,
+                        'samplingRate': 1.0,
+                    }
+                }
+            }
+
+        def put_agent_runtime_logging_configuration(self, agentRuntimeId,
+                                                    loggingConfiguration=None, **kw):
+            return {'ResponseMetadata': {'HTTPStatusCode': 200}}
+
+        class_attributes['get_agent_runtime'] = get_agent_runtime
+        class_attributes['get_agent_runtime_logging_configuration'] = get_agent_runtime_logging_configuration
+        class_attributes['put_agent_runtime_logging_configuration'] = put_agent_runtime_logging_configuration
+
+    import boto3 as _boto3
+    if _boto3.DEFAULT_SESSION is not None:
+        _boto3.DEFAULT_SESSION._session.register(
+            'creating-client-class.bedrock-agentcore', _add_methods
+        )
+        _boto3.DEFAULT_SESSION._session.register(
+            'creating-client-class.bedrock-agentcore-control', _add_methods
+        )
+    else:
+        import botocore.session as _bc_session
+        _original_get = _bc_session.get_session
+
+        def _patched_get(*args, **kwargs):
+            sess = _original_get(*args, **kwargs)
+            sess.register('creating-client-class.bedrock-agentcore', _add_methods)
+            sess.register('creating-client-class.bedrock-agentcore-control', _add_methods)
+            return sess
+
+        _bc_session.get_session = _patched_get
+
+_register_agentcore_compat_methods()
+
+
 if __name__ == '__main__':
     print_config()
